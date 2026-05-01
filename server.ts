@@ -42,6 +42,19 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  app.delete("/api/codes", (req, res) => {
+    fs.writeFileSync(CODES_FILE, JSON.stringify([], null, 2));
+    res.json({ success: true });
+  });
+
+  app.delete("/api/codes/:code", (req, res) => {
+    const codeToRemove = req.params.code;
+    const codes = getCodes();
+    const updatedCodes = codes.filter((c: any) => c.code !== codeToRemove);
+    fs.writeFileSync(CODES_FILE, JSON.stringify(updatedCodes, null, 2));
+    res.json({ success: true });
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

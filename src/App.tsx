@@ -5,7 +5,7 @@
 
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Copy, CheckCircle2, MessageCircle, Lock } from 'lucide-react';
+import { Copy, CheckCircle2, MessageCircle, Lock, Trash2 } from 'lucide-react';
 
 export default function App() {
   const [claimCode, setClaimCode] = useState<string | null>(() => {
@@ -29,9 +29,11 @@ export default function App() {
     return saved !== null ? parseInt(saved, 10) : null;
   });
 
-  const [currentMonth, setCurrentMonth] = useState<number>(() => {
-    const saved = localStorage.getItem('currentMonth');
-    return saved !== null ? parseInt(saved, 10) : new Date().getMonth();
+  const [currentYearMonth, setCurrentYearMonth] = useState<string>(() => {
+    const saved = localStorage.getItem('currentYearMonth');
+    if (saved) return saved;
+    const now = new Date();
+    return `${now.getFullYear()}-${now.getMonth()}`;
   });
   
   // Admin State
@@ -97,8 +99,8 @@ export default function App() {
   }, [nextUnlockTime]);
 
   useEffect(() => {
-    localStorage.setItem('currentMonth', currentMonth.toString());
-  }, [currentMonth]);
+    localStorage.setItem('currentYearMonth', currentYearMonth);
+  }, [currentYearMonth]);
 
   useEffect(() => {
     if (!localStorage.getItem('lastRefreshed')) {
@@ -110,11 +112,11 @@ export default function App() {
   useEffect(() => {
     const checkUnlockAndMonth = () => {
       const now = new Date();
-      const nowMonth = now.getMonth();
+      const nowYearMonth = `${now.getFullYear()}-${now.getMonth()}`;
       
       // Reset month if it changed
-      if (nowMonth !== currentMonth) {
-        setCurrentMonth(nowMonth);
+      if (nowYearMonth !== currentYearMonth) {
+        setCurrentYearMonth(nowYearMonth);
         setClaimsRemaining(7);
         setIsGlowing(true);
         setNextUnlockTime(null);
@@ -136,7 +138,7 @@ export default function App() {
     checkUnlockAndMonth();
     const intervalId = setInterval(checkUnlockAndMonth, 10000);
     return () => clearInterval(intervalId);
-  }, [isGlowing, claimsRemaining, nextUnlockTime, currentMonth]);
+  }, [isGlowing, claimsRemaining, nextUnlockTime, currentYearMonth]);
 
   const generateRandomCode = () => {
     const letters = Math.random().toString(36).substring(2, 5).toUpperCase();
@@ -173,6 +175,20 @@ export default function App() {
     nextDate.setDate(nextDate.getDate() + daysToAdd);
     const nextTime = nextDate.getTime();
     setNextUnlockTime(nextTime);
+  };
+
+  const handleRemoveCode = (codeToRemove: string) => {
+    setGeneratedCodes(prev => prev.filter(c => c.code !== codeToRemove));
+    fetch(`/api/codes/${codeToRemove}`, { method: 'DELETE' })
+      .catch(err => console.log("Static mode: code deleted locally."));
+  };
+
+  const handleClearAllCodes = () => {
+    if (confirm("Are you sure you want to clear all CLAIMED codes?")) {
+      setGeneratedCodes([]);
+      fetch('/api/codes', { method: 'DELETE' })
+        .catch(err => console.log("Static mode: all codes deleted locally."));
+    }
   };
 
   const handleLogin = (e: React.FormEvent) => {
@@ -406,10 +422,20 @@ export default function App() {
             exit={{ opacity: 0, height: 0, y: 20 }}
             className="w-full max-w-4xl bg-black/40 backdrop-blur-xl border border-blue-500/30 rounded-[30px] p-6 sm:p-8 shadow-2xl mt-8 overflow-hidden z-10"
           >
-            <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-3">
-              <span className="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse shadow-[0_0_10px_rgba(74,222,128,0.8)]"></span>
-              Admin Dashboard: Claimed Codes
-            </h2>
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-white flex items-center gap-3">
+                <span className="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse shadow-[0_0_10px_rgba(74,222,128,0.8)]"></span>
+                Admin Dashboard: Claimed Codes
+              </h2>
+              {generatedCodes.length > 0 && (
+                <button 
+                  onClick={handleClearAllCodes}
+                  className="px-4 py-2 bg-red-500/20 hover:bg-red-500/40 border border-red-500/30 text-red-200 text-sm font-bold rounded-xl transition-colors flex items-center gap-2"
+                >
+                  <Trash2 size={16} /> Clear All
+                </button>
+              )}
+            </div>
             
             {generatedCodes.length === 0 ? (
               <div className="bg-white/5 border border-white/10 rounded-2xl p-8 text-center">
@@ -423,15 +449,24 @@ export default function App() {
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: idx * 0.05 }}
                     key={idx} 
-                    className="flex justify-between items-center bg-white/5 border border-white/10 hover:border-blue-500/30 transition-colors rounded-xl p-4 sm:px-6"
+                    className="flex justify-between items-center bg-white/5 border border-white/10 hover:border-blue-500/30 transition-colors rounded-xl p-4 sm:px-6 group"
                   >
                     <div className="flex flex-col">
                       <span className="text-blue-200 text-[10px] font-bold uppercase tracking-widest mb-1">Claim Code</span>
                       <span className="text-white font-mono text-lg sm:text-xl font-bold tracking-wider">{item.code}</span>
                     </div>
-                    <div className="text-right flex flex-col justify-center">
-                      <span className="text-white/40 text-[10px] font-bold uppercase tracking-widest mb-1">Generated At</span>
-                      <span className="text-white/70 text-xs sm:text-sm">{item.timestamp}</span>
+                    <div className="flex items-center gap-6 text-right">
+                      <div className="flex flex-col justify-center">
+                        <span className="text-white/40 text-[10px] font-bold uppercase tracking-widest mb-1">Generated At</span>
+                        <span className="text-white/70 text-xs sm:text-sm">{item.timestamp}</span>
+                      </div>
+                      <button 
+                        onClick={() => handleRemoveCode(item.code)}
+                        className="p-2 bg-red-500/10 hover:bg-red-500/30 text-red-400 hover:text-red-300 rounded-lg transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                        title="Delete code"
+                      >
+                        <Trash2 size={18} />
+                      </button>
                     </div>
                   </motion.div>
                 ))}
