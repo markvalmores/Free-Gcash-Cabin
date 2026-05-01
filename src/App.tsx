@@ -24,6 +24,16 @@ export default function App() {
     return localStorage.getItem('lastRefreshed') || new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).format(new Date());
   });
   
+  const [nextUnlockTime, setNextUnlockTime] = useState<number | null>(() => {
+    const saved = localStorage.getItem('nextUnlockTime');
+    return saved !== null ? parseInt(saved, 10) : null;
+  });
+
+  const [currentMonth, setCurrentMonth] = useState<number>(() => {
+    const saved = localStorage.getItem('currentMonth');
+    return saved !== null ? parseInt(saved, 10) : new Date().getMonth();
+  });
+  
   // Admin State
   const [isAdmin, setIsAdmin] = useState(() => {
     const saved = localStorage.getItem('isAdmin');
@@ -33,10 +43,29 @@ export default function App() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
-  const [generatedCodes, setGeneratedCodes] = useState<{code: string, timestamp: string}[]>(() => {
-    const saved = localStorage.getItem('generatedCodes');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [generatedCodes, setGeneratedCodes] = useState<{code: string, timestamp: string}[]>([]);
+
+  // On mount and when admin changes, try to fetch global codes, fallback to local
+  useEffect(() => {
+    if (isAdmin) {
+      fetch('/api/codes')
+        .then(res => {
+          if (!res.ok) throw new Error("API not available");
+          return res.json();
+        })
+        .then(data => setGeneratedCodes(data))
+        .catch(err => {
+          console.warn("Using local fallback for codes:", err);
+          const saved = localStorage.getItem('localGeneratedCodes');
+          if (saved) setGeneratedCodes(JSON.parse(saved));
+        });
+    }
+  }, [isAdmin]);
+
+  // Persist fallback to local storage
+  useEffect(() => {
+    localStorage.setItem('localGeneratedCodes', JSON.stringify(generatedCodes));
+  }, [generatedCodes]);
 
   // Persistence Effects
   useEffect(() => {
@@ -60,8 +89,16 @@ export default function App() {
   }, [isAdmin]);
 
   useEffect(() => {
-    localStorage.setItem('generatedCodes', JSON.stringify(generatedCodes));
-  }, [generatedCodes]);
+    if (nextUnlockTime !== null) {
+      localStorage.setItem('nextUnlockTime', nextUnlockTime.toString());
+    } else {
+      localStorage.removeItem('nextUnlockTime');
+    }
+  }, [nextUnlockTime]);
+
+  useEffect(() => {
+    localStorage.setItem('currentMonth', currentMonth.toString());
+  }, [currentMonth]);
 
   useEffect(() => {
     if (!localStorage.getItem('lastRefreshed')) {
@@ -69,19 +106,37 @@ export default function App() {
     }
   }, []);
 
-  // For demonstration, simulate the "random refresh times in a month" via a faster timer.
-  // It waits 15-30 seconds after claiming to "glow" again representing a new claiming window.
+  // We check for the next unlock time and the start of a new month.
   useEffect(() => {
-    let timeoutId: NodeJS.Timeout;
-    if (!isGlowing && claimsRemaining > 0) {
-      const randomWait = Math.floor(Math.random() * 15000) + 15000; // 15 to 30 seconds
-      timeoutId = setTimeout(() => {
+    const checkUnlockAndMonth = () => {
+      const now = new Date();
+      const nowMonth = now.getMonth();
+      
+      // Reset month if it changed
+      if (nowMonth !== currentMonth) {
+        setCurrentMonth(nowMonth);
+        setClaimsRemaining(7);
         setIsGlowing(true);
-        setLastRefreshed(new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).format(new Date()));
-      }, randomWait);
-    }
-    return () => clearTimeout(timeoutId);
-  }, [isGlowing, claimsRemaining]);
+        setNextUnlockTime(null);
+        setLastRefreshed(new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).format(now));
+        return;
+      }
+
+      // Check if we reached the unlock date
+      if (!isGlowing && claimsRemaining > 0 && nextUnlockTime !== null) {
+        if (now.getTime() >= nextUnlockTime) {
+          setIsGlowing(true);
+          setNextUnlockTime(null);
+          setLastRefreshed(new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).format(now));
+        }
+      }
+    };
+
+    // Check immediately on mount and then every 10 seconds
+    checkUnlockAndMonth();
+    const intervalId = setInterval(checkUnlockAndMonth, 10000);
+    return () => clearInterval(intervalId);
+  }, [isGlowing, claimsRemaining, nextUnlockTime, currentMonth]);
 
   const generateRandomCode = () => {
     const letters = Math.random().toString(36).substring(2, 5).toUpperCase();
@@ -94,13 +149,30 @@ export default function App() {
     
     const code = generateRandomCode();
     setClaimCode(code);
-    setGeneratedCodes(prev => [
-      { code, timestamp: new Date().toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, month: 'short', day: 'numeric' }) },
-      ...prev
-    ]);
+    
+    // Post to global server, fallback to local state
+    const timestampStr = new Date().toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, month: 'short', day: 'numeric', year: 'numeric' });
+    const newCodeObj = { code, timestamp: timestampStr };
+    
+    // Optimistically update local array so admin sees it immediately in fallback mode
+    setGeneratedCodes(prev => [newCodeObj, ...prev]);
+
+    fetch('/api/codes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newCodeObj)
+    }).catch(err => console.log("Static mode: code synced locally."));
+
     setIsCopied(false);
     setIsGlowing(false);
     setClaimsRemaining(prev => prev - 1);
+
+    // Set next unlock time: 1 to 4 days from now EXACT time
+    const daysToAdd = Math.floor(Math.random() * 4) + 1;
+    const nextDate = new Date();
+    nextDate.setDate(nextDate.getDate() + daysToAdd);
+    const nextTime = nextDate.getTime();
+    setNextUnlockTime(nextTime);
   };
 
   const handleLogin = (e: React.FormEvent) => {
@@ -198,14 +270,21 @@ export default function App() {
                 className={`relative px-8 py-5 sm:px-12 sm:py-6 rounded-3xl text-white text-xl sm:text-2xl font-black border transition-all duration-300 w-full max-w-sm flex items-center justify-center gap-3
                   ${isGlowing 
                     ? 'bg-gradient-to-r from-blue-500 to-blue-600 shadow-[0_0_40px_rgba(59,130,246,0.6)] border-blue-400 cursor-pointer' 
-                    : 'bg-white/5 shadow-none border-white/10 text-white/50 cursor-not-allowed'
+                    : 'bg-white/5 shadow-none border-white/10 text-white/50 cursor-not-allowed text-center'
                   }`}
               >
                 {claimsRemaining <= 0 
                   ? 'NO CLAIMS LEFT' 
                   : isGlowing 
                     ? 'CLAIM ₱50 GCASH' 
-                    : 'WAITING FOR WINDOW'
+                    : (
+                      <span className="flex flex-col text-sm sm:text-base font-bold leading-tight">
+                        <span className="text-white/40 uppercase tracking-widest text-[10px] mb-1">Locked Until</span>
+                        {nextUnlockTime 
+                          ? new Date(nextUnlockTime).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                          : 'WAITING FOR WINDOW'}
+                      </span>
+                    )
                 }
               </motion.button>
             </div>
