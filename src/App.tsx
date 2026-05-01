@@ -6,6 +6,33 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Copy, CheckCircle2, MessageCircle, Lock, Trash2 } from 'lucide-react';
+import confetti from 'canvas-confetti';
+
+const playClaimSound = () => {
+  try {
+    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContext) return;
+    const audioCtx = new AudioContext();
+    const oscillator = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(500, audioCtx.currentTime);
+    oscillator.frequency.exponentialRampToValueAtTime(1000, audioCtx.currentTime + 0.1);
+
+    gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+    gainNode.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 0.05);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+
+    oscillator.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    oscillator.start();
+    oscillator.stop(audioCtx.currentTime + 0.5);
+  } catch (e) {
+    console.error('Audio playback failed', e);
+  }
+};
 
 export default function App() {
   const [claimCode, setClaimCode] = useState<string | null>(() => {
@@ -71,7 +98,11 @@ export default function App() {
 
   // Persistence Effects
   useEffect(() => {
-    if (claimCode) localStorage.setItem('claimCode', claimCode);
+    if (claimCode) {
+      localStorage.setItem('claimCode', claimCode);
+    } else {
+      localStorage.removeItem('claimCode');
+    }
   }, [claimCode]);
 
   useEffect(() => {
@@ -120,6 +151,7 @@ export default function App() {
         setClaimsRemaining(7);
         setIsGlowing(true);
         setNextUnlockTime(null);
+        setClaimCode(null);
         setLastRefreshed(new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).format(now));
         return;
       }
@@ -149,6 +181,16 @@ export default function App() {
   const handleClaim = () => {
     if (!isGlowing || claimsRemaining <= 0) return;
     
+    // SFX and VFX for claim
+    playClaimSound();
+    confetti({
+      particleCount: 150,
+      spread: 80,
+      origin: { y: 0.7 },
+      colors: ['#3b82f6', '#93c5fd', '#ffffff', '#60a5fa'],
+      zIndex: 100
+    });
+
     const code = generateRandomCode();
     setClaimCode(code);
     
@@ -169,8 +211,8 @@ export default function App() {
     setIsGlowing(false);
     setClaimsRemaining(prev => prev - 1);
 
-    // Set next unlock time: 1 to 4 days from now EXACT time
-    const daysToAdd = Math.floor(Math.random() * 4) + 1;
+    // Set next unlock time: 2 to 7 days from now EXACT time (never next day)
+    const daysToAdd = Math.floor(Math.random() * 6) + 2;
     const nextDate = new Date();
     nextDate.setDate(nextDate.getDate() + daysToAdd);
     const nextTime = nextDate.getTime();
@@ -387,10 +429,28 @@ export default function App() {
               <span className="text-white/40 text-[10px] uppercase font-bold tracking-widest mb-1">
                 Claims Remaining
               </span>
-              <span className="text-white text-lg sm:text-xl font-bold flex items-baseline gap-2 justify-center sm:justify-start">
-                {claimsRemaining} / 7 
-                <span className="text-xs text-white/40 font-normal hidden sm:inline">this month</span>
-              </span>
+              <div className="flex items-center gap-2 text-white text-lg sm:text-xl font-bold">
+                <AnimatePresence mode="popLayout">
+                  <motion.span 
+                    key={claimsRemaining}
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 10 }}
+                    className="inline-block"
+                  >
+                    {claimsRemaining}
+                  </motion.span>
+                </AnimatePresence>
+                <span>/ 7 <span className="text-xs text-white/40 font-normal hidden sm:inline ml-1">this month</span></span>
+              </div>
+              <div className="w-full bg-white/10 h-1.5 rounded-full mt-2 overflow-hidden w-28">
+                <motion.div 
+                  initial={{ width: 0 }}
+                  animate={{ width: `${(claimsRemaining / 7) * 100}%` }}
+                  transition={{ duration: 0.5, ease: "easeOut" }}
+                  className="h-full bg-blue-400 rounded-full"
+                />
+              </div>
             </div>
             <div className="flex flex-col">
               <span className="text-white/40 text-[10px] uppercase font-bold tracking-widest mb-1">
