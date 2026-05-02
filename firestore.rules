@@ -1,0 +1,39 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 3. Primitive Definition
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    
+    // We will consider mdv4244@gmail.com the admin
+    function isAdmin() { 
+      return request.auth != null && request.auth.token.email == 'mdv4244@gmail.com'; 
+    }
+
+    function isValidGeneratedCode(data) {
+      return data.keys().hasAll(['code', 'timestamp']) &&
+             data.keys().size() == 2 &&
+             data.code is string && data.code.size() <= 50 &&
+             data.timestamp is string && data.timestamp.size() <= 100;
+    }
+
+    match /codes/{codeId} {
+      // Allow any user (even unauthenticated) to create a code
+      allow create: if isValidId(codeId) && isValidGeneratedCode(incoming());
+      
+      // Only admin can read and delete
+      allow read, list: if isAdmin();
+      allow delete: if isAdmin();
+      allow update: if false;
+    }
+  }
+}

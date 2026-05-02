@@ -7,6 +7,9 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Copy, CheckCircle2, MessageCircle, Lock, Trash2 } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import { db, auth, handleFirestoreError, OperationType } from './lib/firebase';
+import { collection, query, onSnapshot, addDoc, doc, deleteDoc, getDocs, writeBatch } from 'firebase/firestore';
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
 
 const playClaimSound = () => {
   try {
@@ -72,29 +75,34 @@ export default function App() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
-  const [generatedCodes, setGeneratedCodes] = useState<{code: string, timestamp: string}[]>([]);
+  const [generatedCodes, setGeneratedCodes] = useState<{id?: string, code: string, timestamp: string}[]>([]);
 
-  // On mount and when admin changes, try to fetch global codes, fallback to local
+  // Auth state listener
   useEffect(() => {
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (user && user.email === 'mdv4244@gmail.com') {
+         setIsAdmin(true);
+      } else {
+         setIsAdmin(false);
+      }
+    });
+    return () => unsubscribeAuth();
+  }, []);
+
+  // Fetch admin codes from Firestore when admin panel opens
+  useEffect(() => {
+    let unsubscribe = () => {};
     if (isAdmin) {
-      fetch('/api/codes')
-        .then(res => {
-          if (!res.ok) throw new Error("API not available");
-          return res.json();
-        })
-        .then(data => setGeneratedCodes(data))
-        .catch(err => {
-          console.warn("Using local fallback for codes:", err);
-          const saved = localStorage.getItem('localGeneratedCodes');
-          if (saved) setGeneratedCodes(JSON.parse(saved));
-        });
+      const q = query(collection(db, 'codes'));
+      unsubscribe = onSnapshot(q, (snapshot) => {
+        const codesList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
+        setGeneratedCodes(codesList.reverse()); // Just reverse order for simple new-first appearance
+      }, (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'codes');
+      });
     }
+    return () => unsubscribe();
   }, [isAdmin]);
-
-  // Persist fallback to local storage
-  useEffect(() => {
-    localStorage.setItem('localGeneratedCodes', JSON.stringify(generatedCodes));
-  }, [generatedCodes]);
 
   // Persistence Effects
   useEffect(() => {
@@ -194,18 +202,16 @@ export default function App() {
     const code = generateRandomCode();
     setClaimCode(code);
     
-    // Post to global server, fallback to local state
+    // Post to global server via Firestore
     const timestampStr = new Date().toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, month: 'short', day: 'numeric', year: 'numeric' });
     const newCodeObj = { code, timestamp: timestampStr };
     
     // Optimistically update local array so admin sees it immediately in fallback mode
     setGeneratedCodes(prev => [newCodeObj, ...prev]);
 
-    fetch('/api/codes', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newCodeObj)
-    }).catch(err => console.log("Static mode: code synced locally."));
+    addDoc(collection(db, 'codes'), newCodeObj).catch(err => {
+      console.warn("Failed to save code to Firebase:", err);
+    });
 
     setIsCopied(false);
     setIsGlowing(false);
@@ -219,31 +225,69 @@ export default function App() {
     setNextUnlockTime(nextTime);
   };
 
-  const handleRemoveCode = (codeToRemove: string) => {
-    setGeneratedCodes(prev => prev.filter(c => c.code !== codeToRemove));
-    fetch(`/api/codes/${codeToRemove}`, { method: 'DELETE' })
-      .catch(err => console.log("Static mode: code deleted locally."));
-  };
-
-  const handleClearAllCodes = () => {
-    if (confirm("Are you sure you want to clear all CLAIMED codes?")) {
-      setGeneratedCodes([]);
-      fetch('/api/codes', { method: 'DELETE' })
-        .catch(err => console.log("Static mode: all codes deleted locally."));
+  const handleRemoveCode = async (idToRemove: string | undefined, codeString: string) => {
+    // Fallback if local only
+    setGeneratedCodes(prev => prev.filter(c => c.code !== codeString));
+    
+    if (idToRemove) {
+      try {
+        await deleteDoc(doc(db, 'codes', idToRemove));
+      } catch (err) {
+        console.warn("Could not delete from Firebase");
+      }
     }
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleClearAllCodes = async () => {
+    if (confirm("Are you sure you want to clear all CLAIMED codes?")) {
+      setGeneratedCodes([]);
+      try {
+        const querySnapshot = await getDocs(collection(db, 'codes'));
+        const batch = writeBatch(db);
+        querySnapshot.forEach((document) => {
+          batch.delete(doc(db, 'codes', document.id));
+        });
+        await batch.commit();
+      } catch (err) {
+        console.warn("Could not batch delete from Firebase");
+      }
+    }
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLoginError('');
     if (email === 'mdv4244@gmail.com' && password === 'mark4246') {
-      setIsAdmin(true);
-      setShowLoginModal(false);
-      setLoginError('');
-      setEmail('');
-      setPassword('');
+      try {
+        try {
+          await signInWithEmailAndPassword(auth, email, password);
+        } catch (err: any) {
+          // If auth failed, try creating the user (since it's a new project)
+          if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
+             await createUserWithEmailAndPassword(auth, email, password);
+          } else {
+             throw err;
+          }
+        }
+        setIsAdmin(true);
+        setShowLoginModal(false);
+        setEmail('');
+        setPassword('');
+      } catch (error: any) {
+        setLoginError('Authentication failed: ' + error.message);
+      }
     } else {
       setLoginError('Invalid email or password');
     }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch(err) {
+      console.warn("Failed to sign out");
+    }
+    setIsAdmin(false);
   };
 
   const copyToClipboard = () => {
@@ -260,7 +304,7 @@ export default function App() {
       <div className="absolute top-4 right-4 z-50">
         {isAdmin ? (
           <button 
-            onClick={() => setIsAdmin(false)} 
+            onClick={handleLogout} 
             className="flex items-center gap-2 text-white/60 hover:text-white text-sm font-medium px-4 py-2 bg-black/20 rounded-xl border border-white/10 transition-colors"
           >
             <Lock size={16} /> Logout Admin
@@ -521,7 +565,7 @@ export default function App() {
                         <span className="text-white/70 text-xs sm:text-sm">{item.timestamp}</span>
                       </div>
                       <button 
-                        onClick={() => handleRemoveCode(item.code)}
+                        onClick={() => handleRemoveCode(item.id, item.code)}
                         className="p-2 bg-red-500/10 hover:bg-red-500/30 text-red-400 hover:text-red-300 rounded-lg transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
                         title="Delete code"
                       >
