@@ -217,8 +217,8 @@ export default function App() {
     setIsGlowing(false);
     setClaimsRemaining(prev => prev - 1);
 
-    // Set next unlock time: 2 to 7 days from now EXACT time (never next day)
-    const daysToAdd = Math.floor(Math.random() * 6) + 2;
+    // Set next unlock time: 3 to 7 days from now EXACT time
+    const daysToAdd = Math.floor(Math.random() * 5) + 3;
     const nextDate = new Date();
     nextDate.setDate(nextDate.getDate() + daysToAdd);
     const nextTime = nextDate.getTime();
